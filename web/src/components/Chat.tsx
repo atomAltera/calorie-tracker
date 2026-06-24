@@ -1,59 +1,66 @@
 import { useEffect, useRef, useState } from "react";
-import { sendChat, type ChatMessage } from "../api";
+import { fetchMessages, sendChat, type ChatView } from "../api";
 
-type Bubble = { role: "user" | "assistant"; text: string };
+const POLL_MS = 3000;
 
-// Extract readable text from an Anthropic-style content value.
-function textOf(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (Array.isArray(content)) {
-    return content
-      .filter((b: any) => b && b.type === "text" && typeof b.text === "string")
-      .map((b: any) => b.text)
-      .join("\n");
+// Friendly, compact label for a tool call chip.
+function toolLabel(name: string, input: any): string {
+  switch (name) {
+    case "lookup_nutrition":
+      return `🔍 Поиск в USDA: «${input?.query ?? ""}»`;
+    case "add_meal":
+      return `➕ Записываю: ${input?.name ?? "приём пищи"}`;
+    case "update_meal":
+      return `✏️ Правлю запись #${input?.id ?? "?"}`;
+    case "delete_meal":
+      return `🗑️ Удаляю запись #${input?.id ?? "?"}`;
+    case "list_meals":
+      return "📋 Смотрю журнал";
+    default:
+      return `🔧 ${name}`;
   }
-  return "";
 }
 
 export function Chat({ onJournalChanged }: { onJournalChanged: () => void }) {
-  // Full Anthropic history (sent to the API each turn).
-  const [history, setHistory] = useState<ChatMessage[]>([]);
-  // Display bubbles (user + assistant text only).
-  const [bubbles, setBubbles] = useState<Bubble[]>([]);
+  const [view, setView] = useState<ChatView[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const prevLen = useRef(0);
 
+  // Initial load + periodic polling so every viewer sees the same live chat.
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-  }, [bubbles, busy]);
+    let active = true;
+    const load = () =>
+      fetchMessages()
+        .then((v) => active && setView(v))
+        .catch(() => {});
+    load();
+    const t = setInterval(load, POLL_MS);
+    return () => {
+      active = false;
+      clearInterval(t);
+    };
+  }, []);
+
+  // Auto-scroll to the bottom whenever new items arrive (or while sending).
+  useEffect(() => {
+    if (view.length !== prevLen.current || busy) {
+      scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+      prevLen.current = view.length;
+    }
+  }, [view, busy]);
 
   async function send() {
     const text = input.trim();
     if (!text || busy) return;
-
-    const userMsg: ChatMessage = { role: "user", content: text };
-    const nextHistory = [...history, userMsg];
-
-    setBubbles((b) => [...b, { role: "user", text }]);
-    setHistory(nextHistory);
     setInput("");
     setBusy(true);
     setError(null);
-
     try {
-      const result = await sendChat(nextHistory);
-      setHistory(result.messages);
-      setBubbles((b) => [
-        ...b,
-        {
-          role: "assistant",
-          text:
-            result.reply ||
-            textOf(result.messages[result.messages.length - 1]?.content),
-        },
-      ]);
+      const updated = await sendChat(text);
+      setView(updated);
       onJournalChanged();
     } catch (e: any) {
       setError(String(e.message ?? e));
@@ -71,19 +78,29 @@ export function Chat({ onJournalChanged }: { onJournalChanged: () => void }) {
 
   return (
     <div className="chat">
-      <h2>Чат</h2>
+      <h2>Чат <span className="shared-tag">общий</span></h2>
       <div className="messages" ref={scrollRef}>
-        {bubbles.length === 0 && (
+        {view.length === 0 && (
           <div className="hint">
-            Расскажите, что вы съели — ИИ посчитает КБЖУ и запишет в журнал.
-            Можно и поправить запись: «в сырниках белка на 20 г больше».
+            Общий чат для всех, кто открыл страницу. Расскажите, что вы съели — ИИ
+            посчитает КБЖУ (через базу USDA или сам) и запишет в журнал. Можно
+            поправить или удалить запись.
           </div>
         )}
-        {bubbles.map((b, i) => (
-          <div key={i} className={`bubble ${b.role}`}>
-            {b.text}
-          </div>
-        ))}
+        {view.map((item, i) => {
+          if (item.kind === "tool") {
+            return (
+              <div key={i} className="tool-chip">
+                {toolLabel(item.name, item.input)}
+              </div>
+            );
+          }
+          return (
+            <div key={i} className={`bubble ${item.kind}`}>
+              {item.text}
+            </div>
+          );
+        })}
         {busy && <div className="bubble assistant pending">…считаю</div>}
         {error && <div className="bubble error">Ошибка: {error}</div>}
       </div>

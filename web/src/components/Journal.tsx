@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { fetchMeals, type Meal } from "../api";
+import { useCallback, useEffect, useState } from "react";
+import { fetchMeals, deleteMeal, type Meal } from "../api";
 
 function round(n: number): number {
   return Math.round(n * 10) / 10;
@@ -20,15 +20,28 @@ export function Journal({ refreshKey }: { refreshKey: number }) {
   const [meals, setMeals] = useState<Meal[]>([]);
   const [error, setError] = useState<string | null>(null);
 
+  const load = useCallback(() => {
+    return fetchMeals()
+      .then((m) => (setMeals(m), setError(null)))
+      .catch((e) => setError(String(e.message ?? e)));
+  }, []);
+
+  // Reload on mount and whenever the chat reports a change. Also poll lightly so
+  // the shared journal stays in sync across viewers.
   useEffect(() => {
-    let cancelled = false;
-    fetchMeals()
-      .then((m) => !cancelled && (setMeals(m), setError(null)))
-      .catch((e) => !cancelled && setError(String(e.message ?? e)));
-    return () => {
-      cancelled = true;
-    };
-  }, [refreshKey]);
+    load();
+    const t = setInterval(load, 5000);
+    return () => clearInterval(t);
+  }, [refreshKey, load]);
+
+  async function onDelete(id: number) {
+    try {
+      await deleteMeal(id);
+      await load();
+    } catch (e: any) {
+      setError(String(e.message ?? e));
+    }
+  }
 
   const totals = meals.reduce(
     (acc, m) => {
@@ -65,6 +78,14 @@ export function Journal({ refreshKey }: { refreshKey: number }) {
         <ul className="meal-list">
           {meals.map((m) => (
             <li key={m.id} className="meal">
+              <button
+                className="meal-delete"
+                title="Удалить"
+                aria-label="Удалить"
+                onClick={() => onDelete(m.id)}
+              >
+                ✕
+              </button>
               <div className="meal-main">
                 <span className="meal-name">{m.name}</span>
                 {m.grams != null && (

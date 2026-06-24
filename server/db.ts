@@ -17,6 +17,33 @@ db.run(`
   )
 `);
 
+// Single shared conversation, persisted as one JSON blob (Anthropic history).
+db.run(`
+  CREATE TABLE IF NOT EXISTS chat (
+    id      INTEGER PRIMARY KEY CHECK (id = 1),
+    history TEXT NOT NULL
+  )
+`);
+
+export function loadHistory(): unknown[] {
+  const row = db.query("SELECT history FROM chat WHERE id = 1").get() as
+    | { history: string }
+    | undefined;
+  if (!row) return [];
+  try {
+    return JSON.parse(row.history);
+  } catch {
+    return [];
+  }
+}
+
+export function saveHistory(history: unknown[]): void {
+  db.query(
+    `INSERT INTO chat (id, history) VALUES (1, $h)
+     ON CONFLICT(id) DO UPDATE SET history = $h`,
+  ).run({ $h: JSON.stringify(history) });
+}
+
 export type Meal = {
   id: number;
   name: string;
@@ -68,6 +95,11 @@ export function insertMeal(meal: NewMeal): Meal {
       $created_at: now,
     }) as Meal;
   return row;
+}
+
+export function deleteMeal(id: number): boolean {
+  const res = db.query("DELETE FROM meals WHERE id = ?").run(id);
+  return res.changes > 0;
 }
 
 // Updates only the fields that are provided (the correction case).
